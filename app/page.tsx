@@ -31,7 +31,7 @@ export default function GamePlatform() {
 
       <main className="max-w-6xl mx-auto px-6 py-12">
         <div className="text-center mb-12">
-          <h2 className="text-5xl font-bold text-foreground mb-4">Welcome to Nathans Games  </h2>
+          <h2 className="text-5xl font-bold text-foreground mb-4">Welcome to Nathans Games </h2>
           <p className="text-xl text-muted-foreground max-w-2xl mx-auto leading-relaxed">
             Discover exciting games that challenge your skills and creativity. From intense action to strategic
             building, find your perfect gaming experience.
@@ -132,3 +132,9 @@ export default function GamePlatform() {
 
       <footer className="bg-muted/30 border-t border-border mt-16">
         <div className="max-w-6xl mx-auto px-6 py-8 text-center">
+          <p className="text-muted-foreground">© 2024 Nathan's Games. Built with Next.js and Tailwind CSS.</p>
+        </div>
+      </footer>
+    </div>
+  )
+}
