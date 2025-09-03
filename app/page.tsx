@@ -3,9 +3,10 @@
 import { useState } from "react"
 import ShadowTagGame from "../components/shadow-tag-game"
 import ReverseHazardGame from "../components/reverse-hazard-game"
+import ShapeShiftGame from "../components/shape-shift-game"
 
 export default function GamePlatform() {
-  const [selectedGame, setSelectedGame] = useState<"home" | "shadow-tag" | "reverse-hazard">("home")
+  const [selectedGame, setSelectedGame] = useState<"home" | "shadow-tag" | "reverse-hazard" | "shape-shift">("home")
 
   if (selectedGame === "shadow-tag") {
     return <ShadowTagGame onBack={() => setSelectedGame("home")} />
@@ -13,6 +14,10 @@ export default function GamePlatform() {
 
   if (selectedGame === "reverse-hazard") {
     return <ReverseHazardGame onBack={() => setSelectedGame("home")} />
+  }
+
+  if (selectedGame === "shape-shift") {
+    return <ShapeShiftGame onBack={() => setSelectedGame("home")} />
   }
 
   return (
@@ -38,7 +43,7 @@ export default function GamePlatform() {
           </p>
         </div>
 
-        <div className="grid md:grid-cols-2 gap-8 max-w-4xl mx-auto">
+        <div className="grid md:grid-cols-3 gap-8 max-w-6xl mx-auto">
           {/* Shadow Tag Game Card */}
           <div
             onClick={() => setSelectedGame("shadow-tag")}
@@ -90,6 +95,32 @@ export default function GamePlatform() {
                 </span>
               </div>
               <button className="px-6 py-2 bg-accent text-accent-foreground rounded-lg font-medium hover:bg-accent/90 transition-colors">
+                Play Now
+              </button>
+            </div>
+          </div>
+
+          {/* Shape Shift Game Card */}
+          <div
+            onClick={() => setSelectedGame("shape-shift")}
+            className="group bg-card hover:bg-card/90 rounded-xl border border-border p-8 cursor-pointer transition-all duration-300 hover:scale-105 hover:shadow-xl hover:shadow-green-500/20"
+          >
+            <div className="mb-6">
+              <div className="w-16 h-16 bg-gradient-to-br from-blue-500 to-green-600 rounded-lg flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                <span className="text-white text-2xl">🔷</span>
+              </div>
+              <h3 className="text-2xl font-bold text-card-foreground mb-2">Shape Shift</h3>
+              <p className="text-muted-foreground leading-relaxed">
+                A 2D platformer where you switch between three shapes with unique abilities. Navigate obstacles and
+                reach the goal using strategic shape transformations.
+              </p>
+            </div>
+            <div className="flex items-center justify-between">
+              <div className="flex gap-2">
+                <span className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-sm font-medium">Platformer</span>
+                <span className="px-3 py-1 bg-green-100 text-green-700 rounded-full text-sm font-medium">Puzzle</span>
+              </div>
+              <button className="px-6 py-2 bg-green-500 text-white rounded-lg font-medium hover:bg-green-600 transition-colors">
                 Play Now
               </button>
             </div>
