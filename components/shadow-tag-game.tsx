@@ -1,20 +1,22 @@
 "use client"
 
-import { useState, useEffect, useRef, useCallback } from "react"
-import { Button } from "@/components/ui/button"
-
-const CANVAS_WIDTH = 800
-const CANVAS_HEIGHT = 600
-const COIN_COUNT = 10
-const SHADOW_DELAY = 1000
-const SECOND_SHADOW_DELAY = 2000
-const THIRD_SHADOW_DELAY = 3000
-const SHADOW_SIZE = 50
-const PLAYER_SPEED = 5
+import { useEffect, useRef, useState, useCallback } from "react"
 
 interface Position {
   x: number
   y: number
+}
+
+interface MovementRecord {
+  position: Position
+  timestamp: number
+}
+
+interface Obstacle {
+  x: number
+  y: number
+  width: number
+  height: number
 }
 
 interface Coin {
@@ -23,11 +25,11 @@ interface Coin {
   collected: boolean
 }
 
-interface Obstacle {
-  x: number
-  y: number
-  width: number
-  height: number
+interface Shadow {
+  position: Position
+  delay: number
+  visible: boolean
+  size: number
 }
 
 interface MovingObstacle {
@@ -44,6 +46,14 @@ interface Powerup {
   y: number
   type: "slow" | "speed" | "freeze" | "shield"
   collected: boolean
+  duration?: number
+}
+
+interface GameEffects {
+  slowShadows: number // timestamp when effect ends
+  playerSpeed: number // timestamp when effect ends
+  freezeShadows: number // timestamp when effect ends
+  shield: number // timestamp when effect ends
 }
 
 interface GameSave {
@@ -53,28 +63,36 @@ interface GameSave {
   gameStartTime: number
 }
 
-interface GameEffects {
-  slowShadows: number
-  playerSpeed: number
-  freezeShadows: number
-  shield: number
-}
+const CANVAS_WIDTH = 800
+const CANVAS_HEIGHT = 600
+const PLAYER_SIZE = 20
+const SHADOW_SIZE = 18
+const PLAYER_SPEED = 2
+const SHADOW_DELAY = 3000 // 3 seconds
+const OBSTACLE_COUNT = 8
+const COIN_COUNT = 8
+const COIN_SIZE = 12
+const POWERUP_SIZE = 16
 
-interface ShadowTagGameProps {
-  onBack: () => void
-}
+const SECOND_SHADOW_DELAY = 8000
+const THIRD_SHADOW_DELAY = 15000
 
-export default function ShadowTagGame({ onBack }: ShadowTagGameProps) {
-  const [level, setLevel] = useState(1)
-  const [survivalTime, setSurvivalTime] = useState(0)
-  const [playerPos, setPlayerPos] = useState({ x: 100, y: 100 })
-  const [gameState, setGameState] = useState("menu")
+export default function ShadowTagGame({ onBack }: { onBack: () => void }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const gameLoopRef = useRef<number>()
+  const keysRef = useRef<Set<string>>(new Set())
+  const [isFullscreen, setIsFullscreen] = useState(false)
+
+  const [gameState, setGameState] = useState<"menu" | "playing" | "gameOver">("menu")
+  const [playerPos, setPlayerPos] = useState<Position>({ x: 100, y: 100 })
+  const [shadows, setShadows] = useState<Shadow[]>([])
+  const [movementHistory, setMovementHistory] = useState<MovementRecord[]>([])
   const [obstacles, setObstacles] = useState<Obstacle[]>([])
-  const [movingObstacles, setMovingObstacles] = useState<MovingObstacle[]>([])
+  const [movingObstacles, setMovingObstacles] = useState<MovingObstacle[]>([]) // Added moving obstacles state
   const [coins, setCoins] = useState<Coin[]>([])
   const [powerups, setPowerups] = useState<Powerup[]>([])
-  const [movementHistory, setMovementHistory] = useState<{ x: number; y: number }[]>([])
-  const [shadows, setShadows] = useState<{ position: Position; delay: number; visible: boolean; size: number }[]>([])
+  const [level, setLevel] = useState(1)
+  const [survivalTime, setSurvivalTime] = useState(0)
   const [gameStartTime, setGameStartTime] = useState(0)
   const [gameEffects, setGameEffects] = useState<GameEffects>({
     slowShadows: 0,
@@ -82,36 +100,47 @@ export default function ShadowTagGame({ onBack }: ShadowTagGameProps) {
     freezeShadows: 0,
     shield: 0,
   })
-  const keysRef = useRef(new Set<string>())
-  const [isFullscreen, setIsFullscreen] = useState(false)
-  const canvasRef = useRef<HTMLCanvasElement>(null)
+
+  const getShadowSpeedMultiplier = (level: number) => Math.min(1.1 + (level - 1) * 0.1, 2.0)
 
   const generateObstacles = useCallback((): Obstacle[] => {
     const newObstacles: Obstacle[] = []
-    const obstacleCount = Math.min(level * 2, 20)
+    const obstacleCount = Math.min(OBSTACLE_COUNT + Math.floor(level / 2), 15) // More obstacles each level
     for (let i = 0; i < obstacleCount; i++) {
-      newObstacles.push({
-        x: Math.random() * (CANVAS_WIDTH - 50),
-        y: Math.random() * (CANVAS_HEIGHT - 50),
-        width: 50,
-        height: 50,
-      })
+      let obstacle: Obstacle
+      let attempts = 0
+      do {
+        obstacle = {
+          x: Math.random() * (CANVAS_WIDTH - 80) + 40,
+          y: Math.random() * (CANVAS_HEIGHT - 80) + 40,
+          width: 40 + Math.random() * 40,
+          height: 40 + Math.random() * 40,
+        }
+        attempts++
+      } while (
+        attempts < 50 &&
+        obstacle.x < 150 &&
+        obstacle.y < 150 // Keep starting area clear
+      )
+      newObstacles.push(obstacle)
     }
     return newObstacles
   }, [level])
 
   const generateMovingObstacles = useCallback((): MovingObstacle[] => {
     const newMovingObstacles: MovingObstacle[] = []
-    const movingObstacleCount = Math.min(level * 2, 20)
-    for (let i = 0; i < movingObstacleCount; i++) {
-      newMovingObstacles.push({
-        x: Math.random() * (CANVAS_WIDTH - 50),
-        y: Math.random() * (CANVAS_HEIGHT - 50),
-        width: 50,
-        height: 50,
-        vx: Math.random() * 4 - 2,
-        vy: Math.random() * 4 - 2,
-      })
+    const count = Math.min(2 + Math.floor(level / 2), 8) // More moving obstacles at higher levels
+
+    for (let i = 0; i < count; i++) {
+      const obstacle: MovingObstacle = {
+        x: Math.random() * (CANVAS_WIDTH - 60) + 30,
+        y: Math.random() * (CANVAS_HEIGHT - 60) + 30,
+        width: 30,
+        height: 30,
+        vx: (Math.random() - 0.5) * (2 + level * 0.3),
+        vy: (Math.random() - 0.5) * (2 + level * 0.3),
+      }
+      newMovingObstacles.push(obstacle)
     }
     return newMovingObstacles
   }, [level])
@@ -295,6 +324,7 @@ export default function ShadowTagGame({ onBack }: ShadowTagGameProps) {
     try {
       const parsed: GameSave = JSON.parse(saveData)
 
+      // Generate level-appropriate obstacles and items
       const newObstacles = generateObstacles()
       const newMovingObstacles = generateMovingObstacles()
       const newCoins = generateCoins(newObstacles, newMovingObstacles)
@@ -324,22 +354,6 @@ export default function ShadowTagGame({ onBack }: ShadowTagGameProps) {
     }
   }, [generateObstacles, generateMovingObstacles, generateCoins, generatePowerups])
 
-  const toggleFullscreen = useCallback(async () => {
-    if (!canvasRef.current) return
-
-    try {
-      if (!isFullscreen) {
-        await canvasRef.current.requestFullscreen()
-        setIsFullscreen(true)
-      } else {
-        await document.exitFullscreen()
-        setIsFullscreen(false)
-      }
-    } catch (error) {
-      console.error("Fullscreen error:", error)
-    }
-  }, [isFullscreen])
-
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       keysRef.current.add(e.key.toLowerCase())
@@ -359,22 +373,7 @@ export default function ShadowTagGame({ onBack }: ShadowTagGameProps) {
   }, [])
 
   useEffect(() => {
-    const handleFullscreenChange = () => {
-      setIsFullscreen(!!document.fullscreenElement)
-    }
-
-    document.addEventListener("fullscreenchange", handleFullscreenChange)
-    return () => document.removeEventListener("fullscreenchange", handleFullscreenChange)
-  }, [])
-
-  useEffect(() => {
     if (gameState !== "playing") return
-
-    const canvas = canvasRef.current
-    if (!canvas) return
-
-    const ctx = canvas.getContext("2d")
-    if (!ctx) return
 
     const gameLoop = () => {
       const currentTime = Date.now()
@@ -429,171 +428,512 @@ export default function ShadowTagGame({ onBack }: ShadowTagGameProps) {
         if (keysRef.current.has("arrowup") || keysRef.current.has("w")) newY -= currentPlayerSpeed
         if (keysRef.current.has("arrowdown") || keysRef.current.has("s")) newY += currentPlayerSpeed
 
-        if (checkObstacleCollision({ x: newX, y: newY }, 20)) {
-          newX = prevPos.x
-          newY = prevPos.y
-        }
+        newX = Math.max(0, Math.min(CANVAS_WIDTH - PLAYER_SIZE, newX))
+        newY = Math.max(0, Math.min(CANVAS_HEIGHT - PLAYER_SIZE, newY))
 
-        setMovementHistory((prevHistory) => [...prevHistory, { x: newX, y: newY }])
+        const testPos = { x: newX, y: newY }
+        if (checkObstacleCollision(testPos, PLAYER_SIZE)) {
+          return prevPos
+        }
 
         return { x: newX, y: newY }
       })
 
-      ctx.fillStyle = `linear-gradient(135deg, hsl(${220 + level * 10}, 70%, 95%), hsl(${240 + level * 15}, 60%, 90%))`
-      ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT)
+      setShadows((prevShadows) =>
+        prevShadows.map((shadow, index) => {
+          if (!shadow.visible) return shadow
 
-      ctx.fillStyle = "#64748b"
-      obstacles.forEach((obstacle) => {
-        ctx.fillRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height)
-      })
+          if (gameEffects.freezeShadows > currentTime) {
+            return shadow
+          }
 
-      ctx.fillStyle = "#ef4444"
-      movingObstacles.forEach((obstacle) => {
-        ctx.fillRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height)
-      })
+          const baseSpeedMultiplier = getShadowSpeedMultiplier(level)
+          let speedMultipliers = [baseSpeedMultiplier, baseSpeedMultiplier - 0.1, baseSpeedMultiplier - 0.2]
 
-      ctx.fillStyle = "#fde047"
-      coins.forEach((coin) => {
-        if (!coin.collected) {
-          ctx.beginPath()
-          ctx.arc(coin.x, coin.y, 20, 0, Math.PI * 2)
-          ctx.fill()
+          if (gameEffects.slowShadows > currentTime) {
+            speedMultipliers = speedMultipliers.map((speed) => speed * 0.4)
+          }
+
+          const currentSpeedMultiplier = speedMultipliers[index] || baseSpeedMultiplier
+
+          const dx = playerPos.x - shadow.position.x
+          const dy = playerPos.y - shadow.position.y
+          const distance = Math.sqrt(dx * dx + dy * dy)
+
+          if (distance > 1) {
+            const moveX = (dx / distance) * PLAYER_SPEED * currentSpeedMultiplier
+            const moveY = (dy / distance) * PLAYER_SPEED * currentSpeedMultiplier
+
+            let newX = shadow.position.x + moveX
+            let newY = shadow.position.y + moveY
+
+            newX = Math.max(0, Math.min(CANVAS_WIDTH - shadow.size, newX))
+            newY = Math.max(0, Math.min(CANVAS_HEIGHT - shadow.size, newY))
+
+            const testPos = { x: newX, y: newY }
+            if (!checkObstacleCollision(testPos, shadow.size)) {
+              return { ...shadow, position: { x: newX, y: newY } }
+            }
+          }
+          return shadow
+        }),
+      )
+
+      setCoins((prevCoins) => {
+        const updatedCoins = prevCoins.map((coin) => {
+          if (!coin.collected && checkCollision(playerPos, PLAYER_SIZE, coin, COIN_SIZE)) {
+            return { ...coin, collected: true }
+          }
+          return coin
+        })
+
+        const allCoinsCollected = updatedCoins.every((coin) => coin.collected)
+        if (allCoinsCollected && !prevCoins.every((coin) => coin.collected)) {
+          setTimeout(() => {
+            advanceToNextLevel()
+          }, 500)
         }
+
+        return updatedCoins
       })
 
-      ctx.fillStyle = "#ffffff"
-      powerups.forEach((powerup) => {
-        if (!powerup.collected) {
-          ctx.beginPath()
-          ctx.arc(powerup.x, powerup.y, 20, 0, Math.PI * 2)
-          ctx.fill()
-        }
+      setPowerups((prevPowerups) => {
+        return prevPowerups.map((powerup) => {
+          if (!powerup.collected && checkCollision(playerPos, PLAYER_SIZE, powerup, POWERUP_SIZE)) {
+            const effectDuration = 5000 // 5 seconds
+            const newEffectTime = currentTime + effectDuration
+
+            setGameEffects((prev) => {
+              switch (powerup.type) {
+                case "slow":
+                  return { ...prev, slowShadows: newEffectTime }
+                case "speed":
+                  return { ...prev, playerSpeed: newEffectTime }
+                case "freeze":
+                  return { ...prev, freezeShadows: newEffectTime }
+                case "shield":
+                  return { ...prev, shield: newEffectTime }
+                default:
+                  return prev
+              }
+            })
+
+            return { ...powerup, collected: true }
+          }
+          return powerup
+        })
       })
 
-      ctx.fillStyle = "#ffffff"
-      ctx.beginPath()
-      ctx.arc(playerPos.x, playerPos.y, 20, 0, Math.PI * 2)
-      ctx.fill()
+      const shadowCollision =
+        gameEffects.shield <= currentTime &&
+        shadows.some((shadow) => shadow.visible && checkCollision(playerPos, PLAYER_SIZE, shadow.position, shadow.size))
 
-      shadows.forEach((shadow) => {
-        if (shadow.visible) {
-          ctx.fillStyle = `rgba(255, 255, 255, ${0.5 - shadow.size / SHADOW_SIZE})`
-          ctx.beginPath()
-          ctx.arc(shadow.position.x, shadow.position.y, shadow.size, 0, Math.PI * 2)
-          ctx.fill()
-        }
-      })
+      if (shadowCollision) {
+        setGameState("gameOver")
+        return
+      }
 
-      requestAnimationFrame(gameLoop)
+      gameLoopRef.current = requestAnimationFrame(gameLoop)
     }
 
-    gameLoop()
-  }, [gameState, gameStartTime, checkCollision, checkObstacleCollision, advanceToNextLevel, saveGame])
+    gameLoopRef.current = requestAnimationFrame(gameLoop)
+
+    return () => {
+      if (gameLoopRef.current) {
+        cancelAnimationFrame(gameLoopRef.current)
+      }
+    }
+  }, [
+    gameState,
+    gameStartTime,
+    shadows,
+    playerPos,
+    gameEffects,
+    checkCollision,
+    checkObstacleCollision,
+    advanceToNextLevel,
+    level,
+  ])
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    const ctx = canvas.getContext("2d")
+    if (!ctx) return
+
+    const gradient = ctx.createLinearGradient(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT)
+    gradient.addColorStop(0, "#0f172a")
+    gradient.addColorStop(1, "#1e293b")
+    ctx.fillStyle = gradient
+    ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT)
+
+    if (gameState === "menu") {
+      const time = Date.now() * 0.001
+      for (let i = 0; i < 50; i++) {
+        const x = (Math.sin(time + i) * 100 + CANVAS_WIDTH / 2) % CANVAS_WIDTH
+        const y = (Math.cos(time * 0.7 + i) * 80 + CANVAS_HEIGHT / 2) % CANVAS_HEIGHT
+        ctx.fillStyle = `rgba(59, 130, 246, ${0.1 + Math.sin(time + i) * 0.05})`
+        ctx.beginPath()
+        ctx.arc(x, y, 2, 0, Math.PI * 2)
+        ctx.fill()
+      }
+    }
+
+    if (gameState === "playing") {
+      obstacles.forEach((obstacle) => {
+        const obstacleGradient = ctx.createLinearGradient(
+          obstacle.x,
+          obstacle.y,
+          obstacle.x + obstacle.width,
+          obstacle.y + obstacle.height,
+        )
+        obstacleGradient.addColorStop(0, "#64748b")
+        obstacleGradient.addColorStop(1, "#334155")
+        ctx.fillStyle = obstacleGradient
+        ctx.fillRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height)
+
+        ctx.strokeStyle = "#475569"
+        ctx.lineWidth = 1
+        ctx.strokeRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height)
+      })
+
+      movingObstacles.forEach((obstacle, index) => {
+        const time = Date.now() * 0.003
+        const bounce = Math.sin(time * 3 + index) * 3
+        const pulse = Math.sin(time * 2 + index) * 0.2 + 0.8
+
+        // Slime body
+        ctx.fillStyle = `rgba(34, 197, 94, ${pulse})`
+        ctx.shadowColor = "#22c55e"
+        ctx.shadowBlur = 8
+
+        // Draw slime as rounded blob
+        ctx.beginPath()
+        ctx.ellipse(
+          obstacle.x + obstacle.width / 2,
+          obstacle.y + obstacle.height / 2 + bounce,
+          (obstacle.width / 2) * pulse,
+          (obstacle.height / 2) * pulse,
+          0,
+          0,
+          Math.PI * 2,
+        )
+        ctx.fill()
+
+        // Slime eyes
+        ctx.shadowBlur = 0
+        ctx.fillStyle = "#000000"
+        const eyeSize = 3 * pulse
+        ctx.beginPath()
+        ctx.arc(
+          obstacle.x + obstacle.width * 0.35,
+          obstacle.y + obstacle.height * 0.4 + bounce,
+          eyeSize,
+          0,
+          Math.PI * 2,
+        )
+        ctx.fill()
+        ctx.beginPath()
+        ctx.arc(
+          obstacle.x + obstacle.width * 0.65,
+          obstacle.y + obstacle.height * 0.4 + bounce,
+          eyeSize,
+          0,
+          Math.PI * 2,
+        )
+        ctx.fill()
+
+        // Slime highlight
+        ctx.fillStyle = `rgba(255, 255, 255, ${0.3 * pulse})`
+        ctx.beginPath()
+        ctx.ellipse(
+          obstacle.x + obstacle.width * 0.4,
+          obstacle.y + obstacle.height * 0.3 + bounce,
+          obstacle.width * 0.15,
+          obstacle.height * 0.1,
+          0,
+          0,
+          Math.PI * 2,
+        )
+        ctx.fill()
+
+        ctx.shadowBlur = 0
+      })
+
+      const time = Date.now() * 0.003
+      coins.forEach((coin, index) => {
+        if (!coin.collected) {
+          ctx.save()
+          ctx.translate(coin.x + COIN_SIZE / 2, coin.y + COIN_SIZE / 2)
+          ctx.rotate(time + index)
+
+          const coinGradient = ctx.createRadialGradient(0, 0, 0, 0, 0, COIN_SIZE / 2)
+          coinGradient.addColorStop(0, "#fbbf24")
+          coinGradient.addColorStop(1, "#f59e0b")
+          ctx.fillStyle = coinGradient
+          ctx.shadowColor = "#fbbf24"
+          ctx.shadowBlur = 8
+
+          ctx.beginPath()
+          ctx.arc(0, 0, COIN_SIZE / 2, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.shadowBlur = 0
+          ctx.restore()
+        }
+      })
+
+      powerups.forEach((powerup) => {
+        if (!powerup.collected) {
+          const powerupColors = {
+            slow: "#8b5cf6", // Purple for slow
+            speed: "#10b981", // Green for speed
+            freeze: "#06b6d4", // Cyan for freeze
+            shield: "#f59e0b", // Orange for shield
+          }
+
+          ctx.fillStyle = powerupColors[powerup.type]
+          ctx.shadowColor = powerupColors[powerup.type]
+          ctx.shadowBlur = 8
+
+          ctx.save()
+          ctx.translate(powerup.x + POWERUP_SIZE / 2, powerup.y + POWERUP_SIZE / 2)
+          ctx.rotate(Math.PI / 4)
+          ctx.fillRect(-POWERUP_SIZE / 2, -POWERUP_SIZE / 2, POWERUP_SIZE, POWERUP_SIZE)
+          ctx.restore()
+
+          ctx.shadowBlur = 0
+        }
+      })
+
+      shadows.forEach((shadow, index) => {
+        if (shadow.visible) {
+          const shadowColors = ["#4a5568", "#6b7280", "#9ca3af"]
+          ctx.fillStyle = shadowColors[index] || "#4a5568"
+          ctx.fillRect(shadow.position.x, shadow.position.y, shadow.size, shadow.size)
+
+          ctx.shadowColor = shadowColors[index] || "#4a5568"
+          ctx.shadowBlur = 8 - index * 2
+          ctx.fillRect(shadow.position.x, shadow.position.y, shadow.size, shadow.size)
+          ctx.shadowBlur = 0
+        }
+      })
+
+      if (gameEffects.shield > Date.now()) {
+        ctx.fillStyle = "#f59e0b"
+        ctx.shadowColor = "#f59e0b"
+        ctx.shadowBlur = 15
+        ctx.fillRect(playerPos.x - 3, playerPos.y - 3, PLAYER_SIZE + 6, PLAYER_SIZE + 6)
+        ctx.shadowBlur = 0
+      }
+
+      const playerHue = ((level - 1) * 30) % 360
+      ctx.fillStyle = `hsl(${playerHue}, 70%, 60%)`
+      ctx.shadowColor = `hsl(${playerHue}, 70%, 60%)`
+      ctx.shadowBlur = 12
+      ctx.fillRect(playerPos.x, playerPos.y, PLAYER_SIZE, PLAYER_SIZE)
+      ctx.shadowBlur = 0
+
+      ctx.strokeStyle = `hsl(${playerHue}, 70%, 80%)`
+      ctx.lineWidth = 2
+      ctx.strokeRect(playerPos.x, playerPos.y, PLAYER_SIZE, PLAYER_SIZE)
+    }
+  }, [gameState, playerPos, shadows, obstacles, movingObstacles, coins, powerups, gameEffects, level])
+
+  const toggleFullscreen = useCallback(() => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen()
+      setIsFullscreen(true)
+    } else {
+      document.exitFullscreen()
+      setIsFullscreen(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement)
+    }
+
+    document.addEventListener("fullscreenchange", handleFullscreenChange)
+    return () => document.removeEventListener("fullscreenchange", handleFullscreenChange)
+  }, [])
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex flex-col items-center justify-center p-4">
-      {gameState === "menu" && (
-        <div className="text-center space-y-8 max-w-md">
-          <Button
-            onClick={startGame}
-            variant="default"
-            className="bg-white/10 backdrop-blur-sm text-white border-white/20"
+      <div className="text-center mb-6">
+        <h1 className="text-6xl font-bold bg-gradient-to-r from-blue-400 via-purple-500 to-pink-500 bg-clip-text text-transparent mb-4">
+          Shadow Tag
+        </h1>
+        <p className="text-xl text-gray-300 mb-4">
+          Survive the relentless chase through increasingly challenging levels!
+        </p>
+        <div className="flex gap-4 justify-center items-center">
+          <button
+            onClick={onBack}
+            className="px-6 py-3 bg-gradient-to-r from-slate-700 to-slate-600 hover:from-slate-600 hover:to-slate-500 text-white rounded-xl transition-all duration-300 transform hover:scale-105 shadow-lg"
           >
-            Start Game
-          </Button>
-          <Button
-            onClick={loadGame}
-            variant="outline"
-            className="bg-white/10 backdrop-blur-sm text-white border-white/20"
+            ← Back to Menu
+          </button>
+          <button
+            onClick={toggleFullscreen}
+            className="px-6 py-3 bg-gradient-to-r from-gray-700 to-gray-600 hover:from-gray-600 hover:to-gray-500 text-white rounded-xl transition-all duration-300 transform hover:scale-105 shadow-lg"
           >
-            Load Game
-          </Button>
+            {isFullscreen ? "Exit Fullscreen" : "Enter Fullscreen"}
+          </button>
+          {gameState === "playing" && (
+            <button
+              onClick={saveGame}
+              className="px-6 py-3 bg-gradient-to-r from-blue-700 to-blue-600 hover:from-blue-600 hover:to-blue-500 text-white rounded-xl transition-all duration-300 transform hover:scale-105 shadow-lg"
+            >
+              Save Game
+            </button>
+          )}
+        </div>
+      </div>
+
+      {gameState === "playing" && (
+        <div className="flex gap-8 mb-4 text-white">
+          <div className="text-lg">
+            Time: <span className="font-bold text-blue-400">{survivalTime}s</span>
+          </div>
+          <div className="text-lg">
+            Level: <span className="font-bold text-yellow-400">{level}</span>
+          </div>
+          <div className="text-lg">
+            Shadows: <span className="font-bold text-red-400">{shadows.filter((s) => s.visible).length}/3</span>
+          </div>
+          <div className="text-lg">
+            Coins:{" "}
+            <span className="font-bold text-green-400">
+              {coins.filter((c) => !c.collected).length}/{COIN_COUNT}
+            </span>
+          </div>
         </div>
       )}
 
       {gameState === "playing" && (
-        <div className="flex flex-col items-center space-y-4">
-          <div className="flex items-center justify-between w-full max-w-4xl px-4">
-            <Button
-              onClick={onBack}
-              variant="outline"
-              className="bg-white/10 backdrop-blur-sm text-white border-white/20"
-            >
-              ← Back
-            </Button>
-            <div className="flex items-center space-x-6 text-white">
-              <div className="text-center">
-                <div className="text-2xl font-bold">Level {level}</div>
-                <div className="text-sm opacity-80">Current Level</div>
-              </div>
-              <div className="text-center">
-                <div className="text-2xl font-bold">{survivalTime}s</div>
-                <div className="text-sm opacity-80">Survival Time</div>
-              </div>
-              <div className="text-center">
-                <div className="text-2xl font-bold">{coins.filter((c) => !c.collected).length}</div>
-                <div className="text-sm opacity-80">Gold Left</div>
-              </div>
-            </div>
-            <Button
-              onClick={toggleFullscreen}
-              variant="outline"
-              className="bg-white/10 backdrop-blur-sm text-white border-white/20"
-            >
-              {isFullscreen ? "Exit Fullscreen" : "Fullscreen"}
-            </Button>
-          </div>
-          {(gameEffects.slowShadows > Date.now() ||
-            gameEffects.playerSpeed > Date.now() ||
-            gameEffects.freezeShadows > Date.now() ||
-            gameEffects.shield > Date.now()) && (
-            <div className="flex space-x-2 text-white text-sm">
-              {gameEffects.slowShadows > Date.now() && (
-                <span className="bg-purple-500/20 px-2 py-1 rounded">Slow Shadows</span>
-              )}
-              {gameEffects.playerSpeed > Date.now() && (
-                <span className="bg-green-500/20 px-2 py-1 rounded">Speed Boost</span>
-              )}
-              {gameEffects.freezeShadows > Date.now() && (
-                <span className="bg-cyan-500/20 px-2 py-1 rounded">Freeze Shadows</span>
-              )}
-              {gameEffects.shield > Date.now() && <span className="bg-orange-500/20 px-2 py-1 rounded">Shield</span>}
-            </div>
+        <div className="flex gap-4 mb-4 text-sm">
+          {gameEffects.slowShadows > Date.now() && (
+            <div className="px-3 py-1 bg-purple-600 text-white rounded-full">🐌 Slow Shadows</div>
           )}
-          <canvas
-            ref={canvasRef}
-            width={CANVAS_WIDTH}
-            height={CANVAS_HEIGHT}
-            className="border-2 border-white/20 rounded-lg shadow-2xl bg-gradient-to-br from-blue-100 to-purple-100"
-            style={{
-              maxWidth: "100%",
-              height: "auto",
-              cursor: gameEffects.shield > Date.now() ? "crosshair" : "default",
-            }}
-          />
-          <div className="text-white text-center max-w-md">
-            <p className="text-sm opacity-80">
-              Use WASD or arrow keys to move. Collect gold coins to advance levels. Avoid your shadows and moving
-              blocks!
-            </p>
-          </div>
+          {gameEffects.playerSpeed > Date.now() && (
+            <div className="px-3 py-1 bg-green-600 text-white rounded-full">⚡ Speed Boost</div>
+          )}
+          {gameEffects.freezeShadows > Date.now() && (
+            <div className="px-3 py-1 bg-cyan-600 text-white rounded-full">❄️ Frozen Shadows</div>
+          )}
+          {gameEffects.shield > Date.now() && (
+            <div className="px-3 py-1 bg-orange-600 text-white rounded-full">🛡️ Shield Active</div>
+          )}
         </div>
       )}
 
-      {gameState === "gameOver" && (
-        <div className="text-center space-y-6 max-w-md">
-          <div className="text-4xl font-bold text-red-500">Game Over</div>
-          <div className="text-2xl font-bold">Level {level}</div>
-          <div className="text-2xl font-bold">{survivalTime}s</div>
-          <Button
-            onClick={startGame}
-            variant="default"
-            className="bg-white/10 backdrop-blur-sm text-white border-white/20"
-          >
-            Restart Game
-          </Button>
+      <div className="relative">
+        <canvas
+          ref={canvasRef}
+          width={CANVAS_WIDTH}
+          height={CANVAS_HEIGHT}
+          className="border-4 border-purple-500/30 rounded-2xl shadow-2xl shadow-purple-500/20"
+        />
+
+        {gameState === "menu" && (
+          <div className="absolute inset-0 bg-gradient-to-br from-black/80 via-purple-900/50 to-black/80 flex flex-col items-center justify-center rounded-2xl backdrop-blur-sm">
+            <div className="text-center p-8 bg-black/40 rounded-3xl border border-purple-500/30">
+              <h2 className="text-4xl font-bold text-white mb-6 bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
+                Ready for the Challenge?
+              </h2>
+              <p className="text-gray-300 mb-8 text-lg max-w-md leading-relaxed">
+                Each level brings faster shadows, more obstacles, and bouncing slimes. Collect powerups to survive the
+                relentless pursuit!
+              </p>
+              <div className="flex gap-4 justify-center">
+                <button
+                  onClick={startGame}
+                  className="px-12 py-4 bg-gradient-to-r from-blue-600 via-purple-600 to-pink-600 hover:from-blue-500 hover:via-purple-500 hover:to-pink-500 text-white font-bold text-xl rounded-2xl transition-all duration-300 transform hover:scale-110 shadow-2xl shadow-purple-500/30"
+                >
+                  Begin Adventure
+                </button>
+                {typeof window !== "undefined" &&
+                  typeof localStorage !== "undefined" &&
+                  localStorage.getItem("shadowTagSave") && (
+                    <button
+                      onClick={loadGame}
+                      className="px-12 py-4 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 text-white font-bold text-xl rounded-2xl transition-all duration-300 transform hover:scale-110 shadow-2xl shadow-green-500/30"
+                    >
+                      Continue Journey
+                    </button>
+                  )}
+              </div>
+              <button
+                onClick={onBack}
+                className="mt-4 px-8 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-xl transition-colors"
+              >
+                ← Back to Menu
+              </button>
+            </div>
+          </div>
+        )}
+
+        {gameState === "gameOver" && (
+          <div className="absolute inset-0 bg-gradient-to-br from-red-900/80 via-black/80 to-red-900/80 flex flex-col items-center justify-center rounded-2xl backdrop-blur-sm">
+            <div className="text-center p-8 bg-black/40 rounded-3xl border border-red-500/30">
+              <h2 className="text-4xl font-bold text-red-400 mb-6">Epic Battle Ended!</h2>
+              <div className="space-y-3 mb-8">
+                <p className="text-white text-2xl">
+                  Survival Time: <span className="font-bold text-blue-400">{survivalTime}s</span>
+                </p>
+                <p className="text-white text-2xl">
+                  Levels Conquered: <span className="font-bold text-yellow-400">{level}</span>
+                </p>
+                <p className="text-gray-300 text-lg">
+                  {level >= 5 ? "Legendary Performance!" : level >= 3 ? "Great Job!" : "Keep Fighting!"}
+                </p>
+              </div>
+              <button
+                onClick={startGame}
+                className="px-12 py-4 bg-gradient-to-r from-red-600 via-orange-600 to-yellow-600 hover:from-red-500 hover:via-orange-500 hover:to-yellow-500 text-white font-bold text-xl rounded-2xl transition-all duration-300 transform hover:scale-110 shadow-2xl shadow-red-500/30"
+              >
+                Rise Again
+              </button>
+              <button
+                onClick={onBack}
+                className="mt-4 px-8 py-2 bg-slate-700 hover:bg-slate-600 text-white rounded-xl transition-colors"
+              >
+                ← Back to Menu
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="mt-8 text-center text-gray-300 max-w-4xl">
+        <div className="bg-black/20 rounded-2xl p-6 border border-purple-500/20">
+          <h3 className="text-2xl font-bold mb-4 text-purple-400">Game Mechanics</h3>
+          <p className="text-lg mb-4">
+            Navigate with <kbd className="px-2 py-1 bg-gray-700 rounded">WASD</kbd> or arrow keys. Collect all coins to
+            advance levels. Each level increases difficulty with faster shadows and more obstacles!
+          </p>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+            <div className="bg-purple-900/30 p-3 rounded-lg">
+              <span className="text-purple-400 text-lg">💎</span>
+              <div className="text-purple-300">Slow Shadows</div>
+            </div>
+            <div className="bg-green-900/30 p-3 rounded-lg">
+              <span className="text-green-400 text-lg">💎</span>
+              <div className="text-green-300">Speed Boost</div>
+            </div>
+            <div className="bg-cyan-900/30 p-3 rounded-lg">
+              <span className="text-cyan-400 text-lg">💎</span>
+              <div className="text-cyan-300">Freeze Shadows</div>
+            </div>
+            <div className="bg-orange-900/30 p-3 rounded-lg">
+              <span className="text-orange-400 text-lg">💎</span>
+              <div className="text-orange-300">Shield Protection</div>
+            </div>
+          </div>
         </div>
-      )}
+      </div>
     </div>
   )
 }
