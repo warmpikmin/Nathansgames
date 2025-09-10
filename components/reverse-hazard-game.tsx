@@ -36,13 +36,19 @@ const ENEMY_SIZE = 12
 const PROJECTILE_SIZE = 4
 const PLAYER_SPEED = 3
 const ENEMY_SPEED = 1.5
-const PROJECTILE_SPEED = 4
+const PROJECTILE_SPEED = 2.5
 const REVERSAL_INTERVAL = 5000 // 5 seconds
 const REVERSAL_DURATION = 2000 // 2 seconds
 
 export default function ReverseHazardGame({ onBack }: { onBack: () => void }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const gameLoopRef = useRef<number>()
+  const gameStartTimeRef = useRef(0)
+  const lastFrameTimeRef = useRef(0)
+  const lastReversalTimeRef = useRef(0)
+  const isReversingRef = useRef(false)
+  const reversalStartTimeRef = useRef(0)
+
   const [gameState, setGameState] = useState<"menu" | "playing" | "gameOver">("menu")
   const [player, setPlayer] = useState<Position>({ x: ARENA_WIDTH / 2, y: ARENA_HEIGHT / 2 })
   const [enemies, setEnemies] = useState<Enemy[]>([])
@@ -64,6 +70,12 @@ export default function ReverseHazardGame({ onBack }: { onBack: () => void }) {
     setIsReversing(false)
     setNextEnemyId(1)
     setNextProjectileId(1)
+    const now = performance.now()
+    gameStartTimeRef.current = now
+    lastFrameTimeRef.current = now
+    lastReversalTimeRef.current = 0
+    isReversingRef.current = false
+    reversalStartTimeRef.current = 0
   }, [])
 
   const endGame = useCallback(() => {
@@ -144,22 +156,28 @@ export default function ReverseHazardGame({ onBack }: { onBack: () => void }) {
   useEffect(() => {
     if (gameState !== "playing") return
 
-    const gameLoop = () => {
-      setGameTime((prevTime) => {
-        const newTime = prevTime + 16 // ~60fps
+    const gameLoop = (currentTime: number) => {
+      const deltaTime = currentTime - lastFrameTimeRef.current
+      lastFrameTimeRef.current = currentTime
 
-        // Check for reversal trigger
-        const shouldReverse = Math.floor(newTime / REVERSAL_INTERVAL) > Math.floor(prevTime / REVERSAL_INTERVAL)
-        if (shouldReverse) {
-          setIsReversing(true)
-          setReversalCount((prev) => prev + 1)
-          setTimeout(() => setIsReversing(false), REVERSAL_DURATION)
-        }
+      const elapsedGameTime = currentTime - gameStartTimeRef.current
+      setGameTime(elapsedGameTime)
 
-        return newTime
-      })
+      const timeSinceLastReversal = elapsedGameTime - lastReversalTimeRef.current
 
-      // Move player
+      if (timeSinceLastReversal >= REVERSAL_INTERVAL && !isReversingRef.current) {
+        lastReversalTimeRef.current = elapsedGameTime
+        reversalStartTimeRef.current = currentTime
+        isReversingRef.current = true
+        setIsReversing(true)
+        setReversalCount((prev) => prev + 1)
+      }
+
+      if (isReversingRef.current && currentTime - reversalStartTimeRef.current >= REVERSAL_DURATION) {
+        isReversingRef.current = false
+        setIsReversing(false)
+      }
+
       setPlayer((prevPlayer) => {
         let newX = prevPlayer.x
         let newY = prevPlayer.y
@@ -169,30 +187,27 @@ export default function ReverseHazardGame({ onBack }: { onBack: () => void }) {
         if (keys.has("arrowup") || keys.has("w")) newY -= PLAYER_SPEED
         if (keys.has("arrowdown") || keys.has("s")) newY += PLAYER_SPEED
 
-        // Keep player in bounds
         newX = Math.max(PLAYER_SIZE, Math.min(ARENA_WIDTH - PLAYER_SIZE, newX))
         newY = Math.max(PLAYER_SIZE, Math.min(ARENA_HEIGHT - PLAYER_SIZE, newY))
 
         return { x: newX, y: newY }
       })
 
-      // Update enemies
       setEnemies((prevEnemies) => {
         return prevEnemies.map((enemy) => {
-          if (enemy.isReversing) {
-            // Move backward through history
+          if (isReversingRef.current) {
             if (enemy.reverseIndex < enemy.history.length - 1) {
               const pos = enemy.history[enemy.history.length - 1 - enemy.reverseIndex]
               return {
                 ...enemy,
                 x: pos.x,
                 y: pos.y,
+                isReversing: true,
                 reverseIndex: enemy.reverseIndex + 1,
               }
             }
-            return enemy
+            return { ...enemy, isReversing: true }
           } else {
-            // Normal movement toward player
             const dx = player.x - enemy.x
             const dy = player.y - enemy.y
             const distance = Math.sqrt(dx * dx + dy * dy)
@@ -204,71 +219,48 @@ export default function ReverseHazardGame({ onBack }: { onBack: () => void }) {
               const newY = enemy.y + moveY
 
               const newHistory = [...enemy.history, { x: newX, y: newY }]
-              if (newHistory.length > 300) newHistory.shift() // Limit history size
+              if (newHistory.length > 300) newHistory.shift()
+
+              const shootChance = distance < 200 ? 0.01 : 0.004
+              if (Math.random() < shootChance && distance > 30) {
+                setProjectiles((prevProjectiles) => {
+                  const projectile: Projectile = {
+                    id: Date.now() + Math.random(),
+                    x: enemy.x,
+                    y: enemy.y,
+                    dx: (dx / distance) * PROJECTILE_SPEED,
+                    dy: (dy / distance) * PROJECTILE_SPEED,
+                    speed: PROJECTILE_SPEED,
+                    history: [{ x: enemy.x, y: enemy.y }],
+                    isReversing: false,
+                    reverseIndex: 0,
+                  }
+                  return [...prevProjectiles, projectile]
+                })
+              }
 
               return {
                 ...enemy,
                 x: newX,
                 y: newY,
                 history: newHistory,
-              }
-            }
-            return enemy
-          }
-        })
-      })
-
-      // Update reversal state for enemies
-      setEnemies((prevEnemies) => {
-        return prevEnemies.map((enemy) => ({
-          ...enemy,
-          isReversing: isReversing,
-          reverseIndex: isReversing && !enemy.isReversing ? 0 : enemy.reverseIndex,
-        }))
-      })
-
-      // Spawn enemies periodically
-      if (Math.random() < 0.005) {
-        spawnEnemy()
-      }
-
-      // Spawn projectiles from enemies
-      setProjectiles((prevProjectiles) => {
-        const newProjectiles = [...prevProjectiles]
-
-        enemies.forEach((enemy) => {
-          if (Math.random() < 0.005 && !enemy.isReversing) {
-            const dx = player.x - enemy.x
-            const dy = player.y - enemy.y
-            const distance = Math.sqrt(dx * dx + dy * dy)
-
-            if (distance > 0) {
-              const projectile: Projectile = {
-                id: nextProjectileId,
-                x: enemy.x,
-                y: enemy.y,
-                dx: (dx / distance) * PROJECTILE_SPEED,
-                dy: (dy / distance) * PROJECTILE_SPEED,
-                speed: PROJECTILE_SPEED,
-                history: [{ x: enemy.x, y: enemy.y }],
                 isReversing: false,
                 reverseIndex: 0,
               }
-              newProjectiles.push(projectile)
-              setNextProjectileId((prev) => prev + 1)
             }
+            return { ...enemy, isReversing: false, reverseIndex: 0 }
           }
         })
-
-        return newProjectiles
       })
 
-      // Update projectiles
+      if (Math.random() < 0.003) {
+        spawnEnemy()
+      }
+
       setProjectiles((prevProjectiles) => {
         return prevProjectiles
           .map((projectile) => {
-            if (isReversing) {
-              // During reversal, move backward through history
+            if (isReversingRef.current) {
               if (projectile.reverseIndex < projectile.history.length - 1) {
                 const pos = projectile.history[projectile.history.length - 1 - projectile.reverseIndex]
                 return {
@@ -281,7 +273,6 @@ export default function ReverseHazardGame({ onBack }: { onBack: () => void }) {
               }
               return { ...projectile, isReversing: true }
             } else {
-              // Normal movement - projectiles continue moving forward
               const newX = projectile.x + projectile.dx
               const newY = projectile.y + projectile.dy
 
@@ -307,18 +298,25 @@ export default function ReverseHazardGame({ onBack }: { onBack: () => void }) {
           )
       })
 
-      // Collision detection
-      const playerCollision = [...enemies, ...projectiles].some((obj) => {
-        const dx = player.x - obj.x
-        const dy = player.y - obj.y
-        const distance = Math.sqrt(dx * dx + dy * dy)
-        return distance < PLAYER_SIZE + (enemies.includes(obj as Enemy) ? ENEMY_SIZE : PROJECTILE_SIZE)
-      })
+      setPlayer((currentPlayer) => {
+        setEnemies((currentEnemies) => {
+          setProjectiles((currentProjectiles) => {
+            const playerCollision = [...currentEnemies, ...currentProjectiles].some((obj) => {
+              const dx = currentPlayer.x - obj.x
+              const dy = currentPlayer.y - obj.y
+              const distance = Math.sqrt(dx * dx + dy * dy)
+              return distance < PLAYER_SIZE + (currentEnemies.includes(obj as Enemy) ? ENEMY_SIZE : PROJECTILE_SIZE)
+            })
 
-      if (playerCollision) {
-        endGame()
-        return
-      }
+            if (playerCollision) {
+              endGame()
+            }
+            return currentProjectiles
+          })
+          return currentEnemies
+        })
+        return currentPlayer
+      })
 
       gameLoopRef.current = requestAnimationFrame(gameLoop)
     }
@@ -330,7 +328,7 @@ export default function ReverseHazardGame({ onBack }: { onBack: () => void }) {
         cancelAnimationFrame(gameLoopRef.current)
       }
     }
-  }, [gameState, keys, player, enemies, projectiles, isReversing, spawnEnemy, endGame, nextProjectileId])
+  }, [gameState, keys, spawnEnemy, endGame])
 
   // Render game
   useEffect(() => {
@@ -340,31 +338,26 @@ export default function ReverseHazardGame({ onBack }: { onBack: () => void }) {
     const ctx = canvas.getContext("2d")
     if (!ctx) return
 
-    // Clear canvas
-    ctx.fillStyle = isReversing ? "#f0f0f0" : "white"
+    ctx.fillStyle = isReversingRef.current ? "#f0f0f0" : "white"
     ctx.fillRect(0, 0, ARENA_WIDTH, ARENA_HEIGHT)
 
-    // Draw border
     ctx.strokeStyle = "#333"
     ctx.lineWidth = 2
     ctx.strokeRect(0, 0, ARENA_WIDTH, ARENA_HEIGHT)
 
     if (gameState === "playing") {
-      // Draw player
       ctx.fillStyle = "blue"
       ctx.beginPath()
       ctx.arc(player.x, player.y, PLAYER_SIZE, 0, Math.PI * 2)
       ctx.fill()
 
-      // Draw enemies
-      ctx.fillStyle = isReversing ? "#ff6666" : "red"
+      ctx.fillStyle = isReversingRef.current ? "#ff6666" : "red"
       enemies.forEach((enemy) => {
         ctx.beginPath()
         ctx.arc(enemy.x, enemy.y, ENEMY_SIZE, 0, Math.PI * 2)
         ctx.fill()
       })
 
-      // Draw projectiles
       ctx.fillStyle = "black"
       projectiles.forEach((projectile) => {
         ctx.beginPath()
@@ -372,7 +365,7 @@ export default function ReverseHazardGame({ onBack }: { onBack: () => void }) {
         ctx.fill()
       })
     }
-  }, [gameState, player, enemies, projectiles, isReversing])
+  }, [gameState, player, enemies, projectiles, isReversingRef])
 
   const formatTime = (ms: number) => {
     const seconds = Math.floor(ms / 1000)
